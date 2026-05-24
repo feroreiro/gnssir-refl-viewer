@@ -131,7 +131,7 @@
       <span>Dynamic (geometric)</span>
     </div>
     <div style="font-size:10px; color:#999; margin-top:2px; line-height:1.4; padding-left:2px">
-      offset = tan(ē) / ėl · Δobs
+      offset = tan(ē) / Δe · Δtobs
     </div>
 
   </div>
@@ -437,10 +437,10 @@ function selTodo()    { [...document.getElementById('sig-list').options].forEach
 function selNinguno() { [...document.getElementById('sig-list').options].forEach(o => o.selected = false); actualizar(); }
 
 // ─── Temporal offset calcularion ───────────────────────────────────────────────
-// "dynamic" mode: offset = tan(ē) / ėl · Δobs
+// "dynamic" mode: offset = tan(ē) / Δe · Δtobs
 //   ē   = elevation mean (rad)
-//   ėl  = signo_ele · (elev_max - elev_min) in rad  (elevation change rate)
-//   Δobs = duration of the observation (endMs - startMs) in ms
+//   Δe  = signo_ele · (elev_max - elev_min) in rad  (elevation change rate)
+//   Δtobs = duration of the observation (endMs - startMs) in ms
 function calcOffsetMs(i, deltaT) {
   const isDynamic = document.getElementById('dt-dynamic').checked;
   if (isDynamic) {
