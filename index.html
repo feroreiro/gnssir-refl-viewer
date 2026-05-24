@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- 
+    GNSS-IR Reflections Viewer  
+    HTML viewer for GNSS-IR reflections, with the possibility of applying different filters and estimating water level variations.  
+    Developed by Fernando A. Oreiro with assistance from AI-assisted development tools.
+    Institutions: Servicio de Hidrografía Naval, Argentina | Facultad de Ingeniería, Universidad de Buenos Aires
+    Contact: foreiro@fi.uba.ar, feroreiro@yahoo.com.ar
+    Version: 8.2
+  -->
+  <meta charset="UTF-8">
+  <title>GNSSIR Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2/plotly.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; font-size: 13px; background: #f5f5f5; display: flex; height: 100vh; overflow: hidden; }
+    #sidebar { width: 230px; min-width: 230px; background: white; border-right: 1px solid #ddd; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    #main { flex: 1; display: flex; flex-direction: column; }
+    #plot { flex: 1; }
+    label { font-size: 11px; color: #666; display: block; margin-bottom: 2px; }
+    input[type=number] { width: 70px; border: 1px solid #ccc; border-radius: 4px; padding: 2px 4px; }
+    input[type=number].full { width: 100%; }
+    input[type=number]:disabled { background: #f0f0f0; color: #aaa; border-color: #ddd; }
+    select { width: 100%; border: 1px solid #ccc; border-radius: 4px; padding: 3px; }
+    button { width: 100%; padding: 6px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    button:hover { background: #1976D2; }
+    .btn-sec { background: #eee; color: #333; }
+    .btn-sec:hover { background: #ddd; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .section { border-top: 1px solid #eee; padding-top: 8px; }
+    h3 { font-size: 12px; color: #333; margin-bottom: 6px; }
+    #status { font-size: 11px; color: #666; padding: 4px 8px; background: white; border-bottom: 1px solid #ddd; }
+    .lw-status { font-size: 10px; color: #999; margin-top: 2px; min-height: 13px; }
+    .cb-row { display: flex; gap: 6px; align-items: center; margin-bottom: 3px; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .radio-row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+    .radio-row input[type=radio] { margin: 0; }
+    #delta-t-row { margin-top: 4px; transition: opacity 0.2s; }
+    #delta-t-row.disabled-row { opacity: 0.4; pointer-events: none; }
+    .tooltip-q { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: #bbb; color: white; font-size: 10px; font-weight: bold; text-align: center; line-height: 14px; cursor: help; vertical-align: middle; margin-left: 4px; }
+    #tooltip-float { position: fixed; display: none; background: #222; color: #fff; padding: 7px 10px; border-radius: 4px; font-size: 11px; line-height: 1.5; white-space: pre; z-index: 9999; pointer-events: none; max-width: 280px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+  </style>
+</head>
+<body>
+
+<div id="tooltip-float"></div>
+
+<div id="sidebar">
+  <div>
+  <h3>Load dataset</h3>
+  <select id="dataset-select" style="width:100%; margin-bottom:6px">
+    <option value="">— select —</option>
+  </select>
+  <button onclick="cargarDataset()">Load</button>
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const sel = document.getElementById('dataset-select');
+    DATASETS.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.file; opt.textContent = d.label;
+      sel.appendChild(opt);
+    });
+  });
+</script>
+
+  <h3>Reflections file
+    <span class="tooltip-q" data-tip="CSV with header row, comma-separated.&#10;Required columns:&#10;  interval_time, start, end  → dd/mm/yyyy hh:mm&#10;  satellite, signal          → text&#10;  peak_value, mean_LS, reflection,&#10;  elev_min, elev_max,&#10;  az_min, az_max, signo_ele  → number&#10;&#10;Column order does not matter.&#10;Lines starting with # are ignored.">?</span>
+  </h3>
+  <button onclick="document.getElementById('file-input').click()">Load from disk (.csv)</button>
+  <input type="file" id="file-input" accept=".csv,.txt" style="display:none" onchange="cargarArchivo(this)">
+
+  <div class="section">
+    <h3>Tide gauge
+      <span class="tooltip-q" data-tip="CSV with no header, two columns:&#10;  dd/mm/yyyy hh:mm, height(m)&#10;&#10;Example:&#10;  01/06/2023 12:00, 3.42&#10;  01/06/2023 12:10, 3.51">?</span>
+    </h3>
+    <button onclick="document.getElementById('marea-input').click()">Load from disk (.csv)</button>
+    <input type="file" id="marea-input" accept=".csv,.txt" style="display:none" onchange="cargarMarea(this)">
+    <button class="btn-sec" id="marea-clear" style="margin-top:4px" onclick="limpiarMarea()" disabled>Clear</button>
+    <div id="marea-status" class="lw-status"></div>
+  </div>
+
+  <div class="section">
+    <h3>Settings</h3>
+    <label>Antenna height constant (m)</label>
+    <input type="number" id="constante" value="0" step="0.1" class="full" onchange="recalcAlturas()">
+  </div>
+
+  <div class="section">
+    <h3>Filters</h3>
+    <label>Elevation min / max</label>
+    <div class="row">
+      <input type="number" id="elev-min" value="0" step="1" onchange="actualizar()">
+      <input type="number" id="elev-max" value="90" step="1" onchange="actualizar()">
+    </div>
+    <label style="margin-top:6px">Azimuth min / max</label>
+    <div class="row">
+      <input type="number" id="az-min" value="0" step="1" onchange="actualizar()">
+      <input type="number" id="az-max" value="360" step="1" onchange="actualizar()">
+    </div>
+    <label style="margin-top:6px">pk2n min / max</label>
+    <div class="row">
+      <input type="number" id="pk-min" value="0" step="0.5" onchange="actualizar()">
+      <input type="number" id="pk-max" value="50" step="0.5" onchange="actualizar()">
+    </div>
+    <label style="margin-top:6px">Water height min / max (m)</label>
+    <div class="row">
+      <input type="number" id="alt-min" value="-5" step="0.5" onchange="actualizar()">
+      <input type="number" id="alt-max" value="20" step="0.5" onchange="actualizar()">
+    </div>
+
+    <label style="margin-top:6px">Direction</label>
+    <div class="row"><input type="checkbox" id="asc" checked onchange="actualizar()"> <span>Ascending</span></div>
+    <div class="row" style="margin-top:4px"><input type="checkbox" id="desc" checked onchange="actualizar()"> <span>Descending</span></div>
+    <div class="row" style="margin-top:6px">
+      <input type="checkbox" id="color-by-dir" onchange="actualizarDotsOrig(); actualizar()">
+      <span>Color by direction</span>
+    </div>
+
+    <label style="margin-top:10px">Time correction (Δt)</label>
+    <div class="radio-row">
+      <input type="radio" name="dt-mode" id="dt-fixed" value="fixed" checked onchange="onDtModeChange()">
+      <span>Fixed Δt (min)</span>
+    </div>
+    <div id="delta-t-row">
+      <input type="number" id="delta-t" value="0" step="1" class="full" onchange="actualizar()">
+    </div>
+    <div class="radio-row" style="margin-top:4px">
+      <input type="radio" name="dt-mode" id="dt-dynamic" value="dynamic" onchange="onDtModeChange()">
+      <span>Dynamic (geometric)</span>
+    </div>
+    <div style="font-size:10px; color:#999; margin-top:2px; line-height:1.4; padding-left:2px">
+      offset = tan(ē) / ėl · Δobs
+    </div>
+
+  </div>
+
+  <div class="section">
+    <h3>Satellite / Signal</h3>
+    <button class="btn-sec" onclick="selTodo()">All</button>
+    <button class="btn-sec" style="margin-top:4px" onclick="selNinguno()">None</button>
+    <select id="sig-list" multiple size="8" style="margin-top:6px" onchange="actualizar()"></select>
+  </div>
+
+  <div class="section">
+    <h3>LOESS parameters</h3>
+    <label>Interval ± (min)</label>
+    <input type="number" id="lw-interv" value="70" step="5" min="10" class="full" onchange="actualizar()">
+    <label style="margin-top:6px">Min. points in window</label>
+    <input type="number" id="lw-minpts" value="50" step="5" min="2" class="full" onchange="actualizar()">
+    <label style="margin-top:6px">f (frac, 0–1)</label>
+    <input type="number" id="lw-frac" value="1" step="0.05" min="0.01" max="1" class="full" onchange="actualizar()">
+  </div>
+
+  <div class="section">
+    <h3>Traces</h3>
+
+    <div class="cb-row">
+      <input type="checkbox" id="show-orig" checked onchange="actualizar()">
+      <span class="dot" id="dot-orig-asc" style="background:#4488cc"></span>
+      <span class="dot" id="dot-orig-desc" style="background:#ee8800; display:none"></span>
+      <span>Original reflections</span>
+    </div>
+
+    <div class="cb-row" style="margin-top:6px">
+      <input type="checkbox" id="show-lw1" onchange="actualizar()">
+      <span class="dot" style="background:red"></span>
+      <span>LOESS-1 (orig + Δt)</span>
+    </div>
+    <div class="lw-status" id="st-lw1"></div>
+
+    <div class="cb-row" style="margin-top:6px">
+      <input type="checkbox" id="show-corr" onchange="actualizar()">
+      <span class="dot" style="background:#1a7a1a"></span>
+      <span class="dot" style="background:#cc6600"></span>
+      <span>Corrected reflections</span>
+    </div>
+    <div style="margin-left:18px; margin-top:2px;">
+      <div class="cb-row"><input type="checkbox" id="asc-corr" checked onchange="actualizar()"> <span>Ascending</span></div>
+      <div class="cb-row"><input type="checkbox" id="desc-corr" checked onchange="actualizar()"> <span>Descending</span></div>
+    </div>
+
+    <div class="cb-row" style="margin-top:6px">
+      <input type="checkbox" id="show-lw2" onchange="actualizar()">
+      <span class="dot" style="background:#0088cc"></span>
+      <span>LOESS-2 (corrected)</span>
+    </div>
+    <div class="lw-status" id="st-lw2"></div>
+
+    <div class="cb-row" style="margin-top:6px">
+      <input type="checkbox" id="show-lw3" onchange="actualizar()">
+      <span class="dot" style="background:#8844cc"></span>
+      <span>LOESS-3 (2N final)</span>
+    </div>
+    <div class="lw-status" id="st-lw3"></div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="status">No data loaded</div>
+  <div id="plot"></div>
+</div>
+
+<script>
+
+const DATASETS = [
+  { label: 'BRST – 2020-01-20', file: 'BRST_20200120.csv' },
+
+];
+const DATA_BASE = 'https://raw.githubusercontent.com/feroreiro/gnssir-ref-viewer/main/data/';
+
+let dfRaw = null;
+let mareaRaw = null;
+
+async function cargarMarea(input) {
+  const file = input.files[0];
+  if (!file) return;
+  procesarCSVMarea(await file.text(), file.name);
+}
+
+function limpiarMarea() {
+  mareaRaw = null;
+  document.getElementById('marea-status').textContent = '';
+  document.getElementById('marea-clear').disabled = true;
+  actualizar();
+}
+
+function procesarCSVMarea(texto, nombre) {
+  const lineas = texto.split(/\r?\n/).filter(l => l.trim() !== '' && !l.startsWith('#'));
+  if (lineas.length === 0) {
+    document.getElementById('marea-status').textContent = 'Error: archivo vacío.';
+    return;
+  }
+  const tIso = [], altura = [];
+  let errores = 0;
+  for (const linea of lineas) {
+    const partes = linea.split(',');
+    if (partes.length < 2) { errores++; continue; }
+    const t = parseFecha(partes[0]);
+    const h = parseFloat(partes[1]);
+    if (isNaN(t) || isNaN(h)) { errores++; continue; }
+    tIso.push(new Date(t).toISOString());
+    altura.push(h);
+  }
+  if (tIso.length === 0) {
+    document.getElementById('marea-status').textContent = 'Error: sin datos válidos. Verificá el formato (dd/mm/yyyy hh:mm,altura).';
+    return;
+  }
+  mareaRaw = { tIso, altura };
+  document.getElementById('marea-status').textContent =
+    `${tIso.length.toLocaleString()} pts` + (errores > 0 ? ` (${errores} ignoradas)` : '');
+  document.getElementById('marea-clear').disabled = false;
+  ajustarRangoY();
+  actualizar();
+}
+
+const layout = {
+  margin: { t: 30, r: 20, b: 50, l: 60 },
+  xaxis: { title: 'Time (UTC)', type: 'date', tickformat: '%Y-%m-%d %H:%M', hoverformat: '%Y-%m-%d %H:%M UTC' },
+  yaxis: { title: 'Water height (m)' },
+  legend: { x: 0, y: 1 },
+  plot_bgcolor: 'white',
+  paper_bgcolor: '#f5f5f5',
+};
+
+// ─── Floating tooltip ────────────────────────────────────────────────────────
+const _tip = document.getElementById('tooltip-float');
+document.querySelectorAll('.tooltip-q').forEach(el => {
+  el.addEventListener('mouseenter', e => {
+    _tip.textContent = el.dataset.tip;
+    _tip.style.display = 'block';
+  });
+  el.addEventListener('mousemove', e => {
+    const pad = 12;
+    let left = e.clientX + pad;
+    let top  = e.clientY + pad;
+    if (left + 290 > window.innerWidth)  left = e.clientX - 290 - pad;
+    if (top  + _tip.offsetHeight > window.innerHeight) top = e.clientY - _tip.offsetHeight - pad;
+    _tip.style.left = left + 'px';
+    _tip.style.top  = top  + 'px';
+  });
+  el.addEventListener('mouseleave', () => { _tip.style.display = 'none'; });
+});
+
+function onDtModeChange() {
+  const isDynamic = document.getElementById('dt-dynamic').checked;
+  const row = document.getElementById('delta-t-row');
+  row.classList.toggle('disabled-row', isDynamic);
+  document.getElementById('delta-t').disabled = isDynamic;
+  actualizar();
+}
+
+async function cargarArchivo(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('status').textContent = `Loading ${file.name}…`;
+  procesarCSV(await file.text(), file.name);
+}
+
+async function cargarDataset() {
+  const sel = document.getElementById('dataset-select');
+  const file = sel.value;
+  if (!file) return;
+  document.getElementById('status').textContent = `Loading ${file}…`;
+  try {
+    const [rRefl, rTG] = await Promise.all([
+      fetch(DATA_BASE + file),
+      fetch(DATA_BASE + 'TG_' + file)
+    ]);
+    if (rRefl.ok) procesarCSV(await rRefl.text(), file);
+    if (rTG.ok)   procesarCSVMarea(await rTG.text(), 'TG_' + file);
+    else          document.getElementById('marea-status').textContent = 'TG not found';
+  } catch(e) {
+    document.getElementById('status').textContent = `Network error: ${e.message}`;
+  }
+}
+
+// ─── Date parser: dd/mm/yyyy hh:mm  →  ms UTC ────────────────────────────
+function parseFecha(str) {
+  const s = str.trim();
+  // Formato esperado: "dd/mm/yyyy hh:mm"
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
+  if (!m) return NaN;
+  return Date.UTC(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
+}
+
+// ─── Parser CSV ───────────────────────────────────────────────────────────────
+// Format: comma separator, first linea = header
+// Required columns:
+//   interval_time, start, end  →  dd/mm/yyyy hh:mm
+//   satellite, signal          →  text
+//   peak_value, mean_LS, reflection,
+//   elev_min, elev_max, az_min, az_max, signo_ele  →  númber
+function procesarCSV(texto, nombre) {
+  const lineas = texto.split(/\r?\n/).filter(l => l.trim() !== '' && !l.startsWith('#'));
+  if (lineas.length < 2) {
+    document.getElementById('status').textContent = 'Error: archivo vacío o sin datos.';
+    return;
+  }
+
+  const header = lineas[0].split(',').map(h => h.trim());
+  const idx = {};
+  header.forEach((h, i) => idx[h] = i);
+
+  const requeridas = ['interval_time','start','end','satellite','signal',
+                      'peak_value','mean_LS','reflection',
+                      'elev_min','elev_max','az_min','az_max','signo_ele'];
+  const faltantes = requeridas.filter(c => idx[c] === undefined);
+  if (faltantes.length > 0) {
+    document.getElementById('status').textContent = `Error: columnas faltantes: ${faltantes.join(', ')}`;
+    return;
+  }
+
+  const cols = {};
+  requeridas.forEach(c => cols[c] = []);
+
+  const numCols = ['peak_value','mean_LS','reflection','elev_min','elev_max','az_min','az_max','signo_ele'];
+  const fechaCols = ['interval_time','start','end'];
+
+  let errores = 0;
+  for (let li = 1; li < lineas.length; li++) {
+    const campos = lineas[li].split(',');
+    if (campos.length < header.length) { errores++; continue; }
+
+    // Parse dates first — if any fails, avoid entire row
+    const fechas = {};
+    let filaOk = true;
+    for (const c of fechaCols) {
+      const v = parseFecha(campos[idx[c]]);
+      if (isNaN(v)) { filaOk = false; break; }
+      fechas[c] = v;
+    }
+    if (!filaOk) { errores++; continue; }
+
+    fechaCols.forEach(c => cols[c].push(fechas[c]));
+    cols['satellite'].push(campos[idx['satellite']].trim());
+    cols['signal'].push(campos[idx['signal']].trim());
+    for (const c of numCols) {
+      cols[c].push(parseFloat(campos[idx[c]]));
+    }
+  }
+
+  if (cols['interval_time'].length === 0) {
+    document.getElementById('status').textContent = 'Error: no valid rows. Check date format (dd/mm/yyyy hh:mm).';
+    return;
+  }
+
+  dfRaw = cols;
+  dfRaw['tMs']     = dfRaw['interval_time'];
+  dfRaw['startMs'] = dfRaw['start'];
+  dfRaw['endMs']   = dfRaw['end'];
+  dfRaw['pk2n']    = dfRaw['peak_value'].map((v, i) => v / dfRaw['mean_LS'][i]);
+  recalcAlturas(false);
+
+  const sigOpciones = [...new Set(dfRaw['satellite'].map((s,i) => s+' - '+dfRaw['signal'][i]))].sort();
+  const sel = document.getElementById('sig-list');
+  sel.innerHTML = '';
+  sigOpciones.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s; opt.textContent = s; opt.selected = true;
+    sel.appendChild(opt);
+  });
+  document.getElementById('status').textContent =
+    `${nombre} — ${dfRaw['tMs'].length.toLocaleString()} reflections` +
+    (errores > 0 ? ` (${errores} filas ignoradas por error de formato)` : '');
+  ajustarRangoY();
+  actualizar();
+}
+
+function recalcAlturas(redraw = true) {
+  if (!dfRaw) return;
+  const C = +document.getElementById('constante').value;
+  dfRaw['altura'] = dfRaw['reflection'].map(r => C - r);
+  if (redraw) ajustarRangoY(); actualizar();
+}
+
+function ajustarRangoY() {
+  const vals = [];
+  if (dfRaw)    vals.push(...dfRaw['altura'].filter(v => isFinite(v)));
+  if (mareaRaw) vals.push(...mareaRaw.altura.filter(v => isFinite(v)));
+  if (vals.length === 0) return;
+  const mn  = Math.min(...vals);
+  const mx  = Math.max(...vals);
+  const pad = Math.max(0.5, (mx - mn) * 0.05);
+  document.getElementById('alt-min').value = (mn - pad).toFixed(1);
+  document.getElementById('alt-max').value = (mx + pad).toFixed(1);
+}
+
+function actualizarDotsOrig() {
+  const colorByDir = document.getElementById('color-by-dir').checked;
+  document.getElementById('dot-orig-asc').style.background  = '#4488cc';
+  document.getElementById('dot-orig-desc').style.display    = colorByDir ? 'inline-block' : 'none';
+}
+
+function selTodo()    { [...document.getElementById('sig-list').options].forEach(o => o.selected = true);  actualizar(); }
+function selNinguno() { [...document.getElementById('sig-list').options].forEach(o => o.selected = false); actualizar(); }
+
+// ─── Temporal offset calcularion ───────────────────────────────────────────────
+// "dynamic" mode: offset = tan(ē) / ėl · Δobs
+//   ē   = elevation mean (rad)
+//   ėl  = signo_ele · (elev_max - elev_min) in rad  (elevation change rate)
+//   Δobs = duration of the observation (endMs - startMs) in ms
+function calcOffsetMs(i, deltaT) {
+  const isDynamic = document.getElementById('dt-dynamic').checked;
+  if (isDynamic) {
+    const el  = (dfRaw['elev_max'][i] + dfRaw['elev_min'][i]) / 2 * Math.PI / 180;
+    const elp = Number(dfRaw['signo_ele'][i]) * (dfRaw['elev_max'][i] - dfRaw['elev_min'][i]) * Math.PI / 180;
+    if (Math.abs(elp) < 1e-5) return 0;
+    const dif_t_ms = dfRaw['endMs'][i] - dfRaw['startMs'][i];
+    return (Math.tan(el) / elp) * dif_t_ms;
+  } else {
+    const signo = Number(dfRaw['signo_ele'][i]);
+    return signo === 1 ? deltaT * 60000 : -deltaT * 60000;
+  }
+}
+
+// ─── Cuadratic LOESS (degree 2) ─────────
+// Adjust y = a + b·x + c·x² in each window with tricubic weights
+function loessPoint(xArr, yArr, xEval, frac) {
+  const n = xArr.length;
+  if (n < 3) return NaN;
+  const dists = xArr.map(x => Math.abs(x - xEval));
+  const sorted = [...dists].sort((a,b) => a-b);
+  const h = sorted[Math.max(2, Math.floor(frac * n)) - 1];
+  if (h === 0) {
+    let s=0, cnt=0;
+    for (let i=0; i<n; i++) if (dists[i]===0) { s+=yArr[i]; cnt++; }
+    return s/cnt;
+  }
+  const w = dists.map(d => { const u=d/h; if(u>=1) return 0; const v=1-u*u*u; return v*v*v; });
+
+  // Momentos ponderados para el sistema 3x3
+  let sw=0, swx=0, swx2=0, swx3=0, swx4=0, swy=0, swxy=0, swx2y=0;
+  for (let i=0; i<n; i++) {
+    const wi=w[i], xi=xArr[i], yi=yArr[i], xi2=xi*xi;
+    sw    += wi;      swx   += wi*xi;     swx2  += wi*xi2;
+    swx3  += wi*xi2*xi; swx4 += wi*xi2*xi2;
+    swy   += wi*yi;   swxy  += wi*xi*yi;  swx2y += wi*xi2*yi;
+  }
+
+  // Sistema normal WLS grado 2, eliminacion de Gauss con pivoteo parcial
+  const M = [
+    [sw,   swx,  swx2,  swy  ],
+    [swx,  swx2, swx3,  swxy ],
+    [swx2, swx3, swx4,  swx2y]
+  ];
+  for (let col=0; col<3; col++) {
+    let maxR=col;
+    for (let r=col+1; r<3; r++) if (Math.abs(M[r][col])>Math.abs(M[maxR][col])) maxR=r;
+    [M[col],M[maxR]]=[M[maxR],M[col]];
+    if (Math.abs(M[col][col]) < 1e-14) return sw>0 ? swy/sw : NaN;
+    for (let r=0; r<3; r++) {
+      if (r===col) continue;
+      const f=M[r][col]/M[col][col];
+      for (let k=col; k<4; k++) M[r][k]-=f*M[col][k];
+    }
+  }
+  const a=M[0][3]/M[0][0], b=M[1][3]/M[1][1], c=M[2][3]/M[2][2];
+  return a + b*xEval + c*xEval*xEval;
+}
+
+function calcularLoess(filtOrigMs, filtMs, filtY, intervMin, minPts, frac) {
+  if (filtMs.length === 0) return { tIso:[], tMs:[], y:[] };
+  const intervMs = intervMin * 60 * 1000;
+  const stepMs   = 5 * 60 * 1000;
+
+  const dias = new Set();
+  for (const ms of filtOrigMs) {
+    const d = new Date(ms);
+    dias.add(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  }
+
+  const tIso=[], tMs=[], y=[];
+
+  for (const diaMs of [...dias].sort((a,b) => a-b)) {
+    const diaFin = diaMs + 86400000;
+
+    const idxBloque = [];
+    for (let i=0; i<filtOrigMs.length; i++) {
+      if (filtOrigMs[i] >= diaMs && filtOrigMs[i] < diaFin) idxBloque.push(i);
+    }
+    if (idxBloque.length < minPts) continue;
+
+    const tdsBloque = idxBloque.map(i => filtMs[i]);
+    const tdsMin = Math.min(...tdsBloque);
+    const tdsMax = Math.max(...tdsBloque);
+
+    const evalIni = Math.max(tdsMin, diaMs);
+    const evalFin = Math.min(tdsMax, diaFin);
+
+    let prevValid = false;
+    const evalIniAlin = Math.ceil(evalIni / stepMs) * stepMs;
+
+    for (let tEval=evalIniAlin; tEval<=evalFin; tEval+=stepMs) {
+      const winIni = Math.max(tEval - intervMs, evalIni);
+      const winFin = Math.min(tEval + intervMs, evalFin);
+
+      const xWin=[], yWin=[];
+      for (const i of idxBloque)
+        if (filtMs[i] >= winIni && filtMs[i] <= winFin) { xWin.push(filtMs[i]); yWin.push(filtY[i]); }
+
+      if (xWin.length < minPts) {
+        if (prevValid) { tIso.push(new Date(tEval).toISOString()); tMs.push(tEval); y.push(NaN); }
+        prevValid = false;
+        continue;
+      }
+      const x0  = xWin[0];
+      const xN  = xWin.map(v => (v-x0)/60000);
+      const val = loessPoint(xN, yWin, (tEval-x0)/60000, frac);
+      tIso.push(new Date(tEval).toISOString()); tMs.push(tEval); y.push(val);
+      prevValid = true;
+    }
+    tIso.push(null); tMs.push(null); y.push(NaN);
+  }
+  return { tIso, tMs, y };
+}
+
+function interpLoess(lwTMs, lwY, tEval) {
+  if (lwTMs.length === 0) return NaN;
+  let lo=0, hi=lwTMs.length-1;
+  while (lo < hi) { const mid=(lo+hi)>>1; if ((lwTMs[mid]||0) < tEval) lo=mid+1; else hi=mid; }
+  let i1=lo-1, i2=lo;
+  while (i1>=0 && (lwTMs[i1]==null || isNaN(lwY[i1]))) i1--;
+  while (i2<lwTMs.length && (lwTMs[i2]==null || isNaN(lwY[i2]))) i2++;
+  if (i1<0 || i2>=lwTMs.length) return NaN;
+  if (lwTMs[i2] - lwTMs[i1] > 2 * 70 * 60 * 1000) return NaN;
+  const t1=lwTMs[i1], t2=lwTMs[i2];
+  if (t2===t1) return lwY[i1];
+  return lwY[i1] + (lwY[i2]-lwY[i1]) * (tEval-t1) / (t2-t1);
+}
+
+function calcularCorreccionAltura(filtIdx, filtY, lw1TMs, lw1Y) {
+  const ELP_MIN = Math.PI / 180;
+  const corrAltura = new Array(filtIdx.length);
+  for (let j=0; j<filtIdx.length; j++) {
+    const i       = filtIdx[j];
+    const splMin  = interpLoess(lw1TMs, lw1Y, dfRaw['startMs'][i]);
+    const splMax  = interpLoess(lw1TMs, lw1Y, dfRaw['endMs'][i]);
+    if (isNaN(splMin) || isNaN(splMax)) { corrAltura[j] = filtY[j]; continue; }
+    const el  = (dfRaw['elev_max'][i] + dfRaw['elev_min'][i]) / 2 * Math.PI / 180;
+    const elp = Number(dfRaw['signo_ele'][i]) * (dfRaw['elev_max'][i] - dfRaw['elev_min'][i]) * Math.PI / 180;
+    const corr = Math.abs(elp) >= ELP_MIN ? (splMax - splMin) * Math.tan(el) / elp : 0;
+    corrAltura[j] = filtY[j] - corr;
+  }
+  return corrAltura;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+function actualizar() {
+  if (!dfRaw) return;
+
+  const elevMin = +document.getElementById('elev-min').value;
+  const elevMax = +document.getElementById('elev-max').value;
+  const azMin   = +document.getElementById('az-min').value;
+  const azMax   = +document.getElementById('az-max').value;
+  const pkMin   = +document.getElementById('pk-min').value;
+  const pkMax   = +document.getElementById('pk-max').value;
+  const altMin  = +document.getElementById('alt-min').value;
+  const altMax  = +document.getElementById('alt-max').value;
+  const deltaT  = +document.getElementById('delta-t').value;
+  const showAsc  = document.getElementById('asc').checked;
+  const showDesc = document.getElementById('desc').checked;
+  const sigSel   = new Set([...document.getElementById('sig-list').selectedOptions].map(o => o.value));
+
+  const showOrig   = document.getElementById('show-orig').checked;
+  const showLw1    = document.getElementById('show-lw1').checked;
+  const showCorr   = document.getElementById('show-corr').checked;
+  const showLw2    = document.getElementById('show-lw2').checked;
+  const showLw3    = document.getElementById('show-lw3').checked;
+  const colorByDir = document.getElementById('color-by-dir').checked;
+  const needLw1  = showLw1 || showCorr || showLw2 || showLw3;
+
+  const intervMin = +document.getElementById('lw-interv').value;
+  const minPts    = +document.getElementById('lw-minpts').value;
+  const frac      = Math.min(1, Math.max(0.01, +document.getElementById('lw-frac').value));
+
+  // ── Filtering ──────────────────────────────────────────────────────────────
+  const n = dfRaw['tMs'].length;
+  const filtIdx=[], filtTdMs=[], filtTorigMs=[], filtY=[], filtSigno=[];
+  const MAX_OFFSET_MS = 3600 * 1000; // 1 hora
+
+    for (let i=0; i<n; i++) {
+      if (dfRaw['elev_min'][i] < elevMin) continue;
+      if (dfRaw['elev_max'][i] > elevMax) continue;
+      if (dfRaw['az_min'][i]   < azMin)  continue;
+      if (dfRaw['az_max'][i]   > azMax)  continue;
+      if (dfRaw['pk2n'][i]     < pkMin)  continue;
+      if (dfRaw['pk2n'][i]     > pkMax)  continue;
+      if (dfRaw['altura'][i]   < altMin) continue;
+      if (dfRaw['altura'][i]   > altMax) continue;
+      const signo = Number(dfRaw['signo_ele'][i]);
+      const satsig = dfRaw['satellite'][i]+' - '+dfRaw['signal'][i];
+      if (!sigSel.has(satsig)) continue;
+
+      // Offset: dinamyc or fix according to radio button
+      const offsetMs = calcOffsetMs(i, deltaT);
+
+      // Limit: corrected timestamp is limited to 1h of the day
+      const tOrig = dfRaw['tMs'][i];
+      const tCorr = tOrig + offsetMs;
+      const d = new Date(tOrig);
+      const dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      const dayEnd   = dayStart + 86400000;
+      if (tCorr < dayStart - MAX_OFFSET_MS || tCorr > dayEnd + MAX_OFFSET_MS) continue;
+
+      filtIdx.push(i);
+      filtTdMs.push(tCorr);
+      filtTorigMs.push(tOrig);
+      filtY.push(dfRaw['altura'][i]);
+      filtSigno.push(signo);
+    }
+
+  // ── Original reflections ─────────────────────────────────────────────────────
+  const traces = [];
+  if (showOrig) {
+    const COL_ASC  = '#4488cc';
+    const COL_DESC = colorByDir ? '#ee8800' : '#4488cc';
+    const tA=[], yA=[], txA=[], tD=[], yD=[], txD=[];
+    for (let j=0; j<filtIdx.length; j++) {
+      if (filtSigno[j]===1 && !showAsc)  continue;
+      if (filtSigno[j]===-1 && !showDesc) continue;
+      const i=filtIdx[j];
+      const tStr = new Date(filtTdMs[j]).toISOString();
+      const ht   = filtY[j];
+      const txt  = `${dfRaw['satellite'][i]} - ${dfRaw['signal'][i]}<br>Height: ${ht.toFixed(2)} m<br>pk2n: ${dfRaw['pk2n'][i].toFixed(2)}<br>Elev: ${dfRaw['elev_min'][i].toFixed(1)}-${dfRaw['elev_max'][i].toFixed(1)}°`;
+      if (filtSigno[j]===1) { tA.push(tStr); yA.push(ht); txA.push(txt); }
+      else                  { tD.push(tStr); yD.push(ht); txD.push(txt); }
+    }
+    if (colorByDir) {
+      traces.push({ x:tA, y:yA, mode:'markers', type:'scattergl', name:'Asc (orig)',
+        marker:{color:COL_ASC, size:3,opacity:0.6}, text:txA, hovertemplate:'%{text}<extra></extra>' });
+      traces.push({ x:tD, y:yD, mode:'markers', type:'scattergl', name:'Desc (orig)',
+        marker:{color:COL_DESC,size:3,opacity:0.6}, text:txD, hovertemplate:'%{text}<extra></extra>' });
+    } else {
+      traces.push({ x:[...tA,...tD], y:[...yA,...yD], mode:'markers', type:'scattergl', name:'Reflections',
+        marker:{color:COL_ASC,size:3,opacity:0.6}, text:[...txA,...txD], hovertemplate:'%{text}<extra></extra>' });
+    }
+  }
+
+  if (!needLw1) {
+    if (mareaRaw) {
+      traces.push({ x:mareaRaw.tIso, y:mareaRaw.altura,
+        mode:'lines', type:'scatter', name:'Tide gauge',
+        line:{color:'#009900',width:1.5},
+        hovertemplate:'Tide: %{y:.3f} m<extra></extra>' });
+    }
+    Plotly.react('plot', traces, layout, { responsive:true });
+    document.getElementById('status').textContent = `${filtIdx.length.toLocaleString()} reflections shown`;
+    ['st-lw1','st-lw2','st-lw3'].forEach(id => document.getElementById(id).textContent='');
+    return;
+  }
+
+  if (showLw1) document.getElementById('st-lw1').textContent = 'Calculating…';
+  if (showLw2) document.getElementById('st-lw2').textContent = 'Calculating…';
+  if (showLw3) document.getElementById('st-lw3').textContent = 'Calculating…';
+  Plotly.react('plot', traces, layout, { responsive:true });
+
+  setTimeout(() => {
+    // ── LOESS-1 ──────────────────────────────────────────────────────────
+    const t0 = performance.now();
+    const lw1 = calcularLoess(filtTorigMs, filtTdMs, filtY, intervMin, minPts, frac);
+    const dt1 = ((performance.now()-t0)/1000).toFixed(1);
+    if (showLw1) {
+      document.getElementById('st-lw1').textContent = `${lw1.y.filter(v=>!isNaN(v)).length} pts — ${dt1}s`;
+      traces.push({ x:lw1.tIso, y:lw1.y, mode:'lines', type:'scatter', name:'LOESS-1',
+        line:{color:'red',width:2}, connectgaps:false,
+        hovertemplate:'L1: %{y:.3f} m<extra></extra>' });
+    }
+
+    let corrAltura = null;
+    if (showCorr || showLw2 || showLw3)
+      corrAltura = calcularCorreccionAltura(filtIdx, filtY, lw1.tMs, lw1.y);
+
+    // ── LOESS-2 ────────────────────────────────────────────────────────────
+    if (showLw2 && corrAltura) {
+      const t2 = performance.now();
+      const lw2 = calcularLoess(filtTorigMs, filtTorigMs, corrAltura, intervMin, minPts, frac);
+      const dt2 = ((performance.now()-t2)/1000).toFixed(1);
+      document.getElementById('st-lw2').textContent = `${lw2.y.filter(v=>!isNaN(v)).length} pts — ${dt2}s`;
+      traces.push({ x:lw2.tIso, y:lw2.y, mode:'lines', type:'scatter', name:'LOESS-2',
+        line:{color:'#0088cc',width:2}, connectgaps:false,
+        hovertemplate:'L2: %{y:.3f} m<extra></extra>' });
+    }
+
+    if (showCorr && corrAltura) {
+      const showAscCorr  = document.getElementById('asc-corr').checked;
+      const showDescCorr = document.getElementById('desc-corr').checked;
+      const tA=[], yA=[], txA=[], tD=[], yD=[], txD=[];
+      for (let j=0; j<filtIdx.length; j++) {
+        if (filtSigno[j]===1 && !showAscCorr)  continue;
+        if (filtSigno[j]===-1 && !showDescCorr) continue;
+        const i=filtIdx[j];
+        const tStr = new Date(filtTorigMs[j]).toISOString();
+        const ht   = corrAltura[j];
+        const txt  = `${dfRaw['satellite'][i]} - ${dfRaw['signal'][i]}<br>Corr height: ${ht.toFixed(2)} m<br>Elev: ${dfRaw['elev_min'][i].toFixed(1)}-${dfRaw['elev_max'][i].toFixed(1)}°`;
+        if (filtSigno[j]===1) { tA.push(tStr); yA.push(ht); txA.push(txt); }
+        else                  { tD.push(tStr); yD.push(ht); txD.push(txt); }
+      }
+      traces.push({ x:tA, y:yA, mode:'markers', type:'scattergl', name:'Asc (corr)',
+        marker:{color:'#1a7a1a',size:3,opacity:0.6}, text:txA, hovertemplate:'%{text}<extra></extra>' });
+      traces.push({ x:tD, y:yD, mode:'markers', type:'scattergl', name:'Desc (corr)',
+        marker:{color:'#cc6600',size:3,opacity:0.6}, text:txD, hovertemplate:'%{text}<extra></extra>' });
+    }
+
+    // ── LOESS-3: over final 2N reflections ─────────────────────────────────
+    // corrAltura @ t̄  +  filtY @ t_eff
+    if (showLw3 && corrAltura) {
+      const mergedOrigMs = [...filtTorigMs, ...filtTorigMs];
+      const mergedMs     = [...filtTorigMs, ...filtTdMs];
+      const mergedY      = [...corrAltura,  ...filtY];
+      const order        = mergedOrigMs.map((_,i)=>i).sort((a,b)=>mergedOrigMs[a]-mergedOrigMs[b]);
+
+      const t3 = performance.now();
+      const lw3 = calcularLoess(
+        order.map(i=>mergedOrigMs[i]),
+        order.map(i=>mergedMs[i]),
+        order.map(i=>mergedY[i]),
+        intervMin, minPts, frac
+      );
+      const dt3 = ((performance.now()-t3)/1000).toFixed(1);
+      document.getElementById('st-lw3').textContent = `${lw3.y.filter(v=>!isNaN(v)).length} pts — ${dt3}s`;
+      traces.push({ x:lw3.tIso, y:lw3.y, mode:'lines', type:'scatter', name:'LOESS-3 (2N)',
+        line:{color:'#8844cc',width:2}, connectgaps:false,
+        hovertemplate:'L3: %{y:.3f} m<extra></extra>' });
+    }
+
+    // ── Tide gauge ────────────────────────────────────────────────────────────
+    if (mareaRaw) {
+      traces.push({ x:mareaRaw.tIso, y:mareaRaw.altura,
+        mode:'lines', type:'scatter', name:'Tide gauge',
+        line:{color:'#009900',width:1.5},
+        hovertemplate:'Tide: %{y:.3f} m<extra></extra>' });
+    }
+
+    Plotly.react('plot', traces, layout, { responsive:true });
+    document.getElementById('status').textContent =
+      `${filtIdx.length.toLocaleString()} reflections shown`;
+  }, 20);
+}
+</script>
+</body>
+</html>
