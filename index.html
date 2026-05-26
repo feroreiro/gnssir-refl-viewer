@@ -6,8 +6,8 @@
     HTML viewer for GNSS-IR reflections, with the possibility of applying different filters and estimating water level variations.  
     Developed by Fernando A. Oreiro with assistance from AI-assisted development tools.
     Institutions: Servicio de Hidrografía Naval, Argentina | Facultad de Ingeniería, Universidad de Buenos Aires
-    Contact: foreiro@fi.uba.ar, feroreiro@yahoo.com.ar
-    Version: 8.2
+    Contact: foreiro@fi.uba.ar, fernandooreiro@yahoo.com.ar
+    Version: 8.4
   -->
   <meta charset="UTF-8">
   <title>GNSSIR Viewer</title>
@@ -171,6 +171,14 @@
     <div class="lw-status" id="st-lw1"></div>
 
     <div class="cb-row" style="margin-top:6px">
+      <input type="checkbox" id="use-lw1-filter" onchange="onLw1FilterChange()">
+      <span>Filter by LOESS-1 ± (m)</span>
+    </div>
+    <div id="lw1-filter-row" style="margin-top:2px; opacity:0.4; pointer-events:none;">
+      <input type="number" id="lw1-dist" value="0.5" step="0.05" min="0.01" class="full" onchange="actualizar()">
+    </div>
+
+    <div class="cb-row" style="margin-top:6px">
       <input type="checkbox" id="show-corr" onchange="actualizar()">
       <span class="dot" style="background:#1a7a1a"></span>
       <span class="dot" style="background:#cc6600"></span>
@@ -206,6 +214,9 @@
 
 const DATASETS = [
   { label: 'BRST – 2020-01-20', file: 'BRST_20200120.csv' },
+  { label: 'BRST – 2021-12-31', file: 'BRST_20211231.csv' },
+  { label: 'OWMG – 2020-01-18', file: 'OWMG_20200118.csv' },
+  { label: 'OWMG – 2025-01-10', file: 'OWMG_20250110.csv' },
 
 ];
 const DATA_BASE = 'https://raw.githubusercontent.com/feroreiro/gnssir-refl-viewer/main/data/';
@@ -282,6 +293,15 @@ document.querySelectorAll('.tooltip-q').forEach(el => {
   });
   el.addEventListener('mouseleave', () => { _tip.style.display = 'none'; });
 });
+
+function onLw1FilterChange() {
+  const active = document.getElementById('use-lw1-filter').checked;
+  const row = document.getElementById('lw1-filter-row');
+  row.style.opacity = active ? '1' : '0.4';
+  row.style.pointerEvents = active ? 'auto' : 'none';
+  // LOESS-1 is needed when this filter is active
+  actualizar();
+}
 
 function onDtModeChange() {
   const isDynamic = document.getElementById('dt-dynamic').checked;
@@ -609,7 +629,9 @@ function actualizar() {
   const showLw2    = document.getElementById('show-lw2').checked;
   const showLw3    = document.getElementById('show-lw3').checked;
   const colorByDir = document.getElementById('color-by-dir').checked;
-  const needLw1  = showLw1 || showCorr || showLw2 || showLw3;
+  const useLw1Filter = document.getElementById('use-lw1-filter').checked;
+  const lw1Dist      = Math.max(0.001, +document.getElementById('lw1-dist').value);
+  const needLw1  = showLw1 || showCorr || showLw2 || showLw3 || useLw1Filter;
 
   const intervMin = +document.getElementById('lw-interv').value;
   const minPts    = +document.getElementById('lw-minpts').value;
@@ -653,19 +675,20 @@ function actualizar() {
 
   // ── Original reflections ─────────────────────────────────────────────────────
   const traces = [];
-  if (showOrig) {
+  function buildOrigTraces(idxArr, tdMsArr, yArr, signoArr) {
+    if (!showOrig) return;
     const COL_ASC  = '#4488cc';
     const COL_DESC = colorByDir ? '#ee8800' : '#4488cc';
     const tA=[], yA=[], txA=[], tD=[], yD=[], txD=[];
-    for (let j=0; j<filtIdx.length; j++) {
-      if (filtSigno[j]===1 && !showAsc)  continue;
-      if (filtSigno[j]===-1 && !showDesc) continue;
-      const i=filtIdx[j];
-      const tStr = new Date(filtTdMs[j]).toISOString();
-      const ht   = filtY[j];
+    for (let j=0; j<idxArr.length; j++) {
+      if (signoArr[j]===1  && !showAsc)  continue;
+      if (signoArr[j]===-1 && !showDesc) continue;
+      const i=idxArr[j];
+      const tStr = new Date(tdMsArr[j]).toISOString();
+      const ht   = yArr[j];
       const txt  = `${dfRaw['satellite'][i]} - ${dfRaw['signal'][i]}<br>Height: ${ht.toFixed(2)} m<br>pk2n: ${dfRaw['pk2n'][i].toFixed(2)}<br>Elev: ${dfRaw['elev_min'][i].toFixed(1)}-${dfRaw['elev_max'][i].toFixed(1)}°`;
-      if (filtSigno[j]===1) { tA.push(tStr); yA.push(ht); txA.push(txt); }
-      else                  { tD.push(tStr); yD.push(ht); txD.push(txt); }
+      if (signoArr[j]===1) { tA.push(tStr); yA.push(ht); txA.push(txt); }
+      else                 { tD.push(tStr); yD.push(ht); txD.push(txt); }
     }
     if (colorByDir) {
       traces.push({ x:tA, y:yA, mode:'markers', type:'scattergl', name:'Asc (orig)',
@@ -677,6 +700,8 @@ function actualizar() {
         marker:{color:COL_ASC,size:3,opacity:0.6}, text:[...txA,...txD], hovertemplate:'%{text}<extra></extra>' });
     }
   }
+  // If filter is OFF, build original traces immediately; otherwise defer until lw1 is known
+  if (!useLw1Filter) buildOrigTraces(filtIdx, filtTdMs, filtY, filtSigno);
 
   if (!needLw1) {
     if (mareaRaw) {
@@ -701,6 +726,31 @@ function actualizar() {
     const t0 = performance.now();
     const lw1 = calcularLoess(filtTorigMs, filtTdMs, filtY, intervMin, minPts, frac);
     const dt1 = ((performance.now()-t0)/1000).toFixed(1);
+    let corrAltura = null;
+    // ── LOESS-1 distance filter ───────────────────────────────────────────────
+    let filt2Idx=filtIdx, filt2TdMs=filtTdMs, filt2TorigMs=filtTorigMs,
+        filt2Y=filtY, filt2Signo=filtSigno;
+    let nRemoved = 0;
+    if (useLw1Filter) {
+      filt2Idx=[]; filt2TdMs=[]; filt2TorigMs=[]; filt2Y=[]; filt2Signo=[];
+      for (let j=0; j<filtIdx.length; j++) {
+        const lw1Val = interpLoess(lw1.tMs, lw1.y, filtTdMs[j]);
+        if (!isNaN(lw1Val) && Math.abs(filtY[j] - lw1Val) > lw1Dist) { nRemoved++; continue; }
+        filt2Idx.push(filtIdx[j]);
+        filt2TdMs.push(filtTdMs[j]);
+        filt2TorigMs.push(filtTorigMs[j]);
+        filt2Y.push(filtY[j]);
+        filt2Signo.push(filtSigno[j]);
+      }
+    }
+
+    if (showCorr || showLw2 || showLw3)
+      corrAltura = calcularCorreccionAltura(filt2Idx, filt2Y, lw1.tMs, lw1.y);
+
+    // ── Filtered original reflections (deferred until lw1 known) ─────────────
+    if (useLw1Filter) buildOrigTraces(filt2Idx, filt2TdMs, filt2Y, filt2Signo);
+
+    // ── LOESS-1 line (after orig dots so it renders on top) ───────────────────
     if (showLw1) {
       document.getElementById('st-lw1').textContent = `${lw1.y.filter(v=>!isNaN(v)).length} pts — ${dt1}s`;
       traces.push({ x:lw1.tIso, y:lw1.y, mode:'lines', type:'scatter', name:'LOESS-1',
@@ -708,14 +758,20 @@ function actualizar() {
         hovertemplate:'L1: %{y:.3f} m<extra></extra>' });
     }
 
-    let corrAltura = null;
-    if (showCorr || showLw2 || showLw3)
-      corrAltura = calcularCorreccionAltura(filtIdx, filtY, lw1.tMs, lw1.y);
+    // ── Band lines LOESS-1 ± dist ─────────────────────────────────────────────
+    if (useLw1Filter) {
+      const yUp = lw1.y.map(v => isNaN(v) ? NaN : v + lw1Dist);
+      const yDn = lw1.y.map(v => isNaN(v) ? NaN : v - lw1Dist);
+      const bandStyle = { mode:'lines', type:'scatter', connectgaps:false, showlegend:false,
+        line:{color:'#aaaaaa', width:1, dash:'dot'}, hoverinfo:'skip' };
+      traces.push({ ...bandStyle, x:lw1.tIso, y:yUp, name:'L1+dist' });
+      traces.push({ ...bandStyle, x:lw1.tIso, y:yDn, name:'L1-dist' });
+    }
 
     // ── LOESS-2 ────────────────────────────────────────────────────────────
     if (showLw2 && corrAltura) {
       const t2 = performance.now();
-      const lw2 = calcularLoess(filtTorigMs, filtTorigMs, corrAltura, intervMin, minPts, frac);
+      const lw2 = calcularLoess(filt2TorigMs, filt2TorigMs, corrAltura, intervMin, minPts, frac);
       const dt2 = ((performance.now()-t2)/1000).toFixed(1);
       document.getElementById('st-lw2').textContent = `${lw2.y.filter(v=>!isNaN(v)).length} pts — ${dt2}s`;
       traces.push({ x:lw2.tIso, y:lw2.y, mode:'lines', type:'scatter', name:'LOESS-2',
@@ -727,15 +783,15 @@ function actualizar() {
       const showAscCorr  = document.getElementById('asc-corr').checked;
       const showDescCorr = document.getElementById('desc-corr').checked;
       const tA=[], yA=[], txA=[], tD=[], yD=[], txD=[];
-      for (let j=0; j<filtIdx.length; j++) {
-        if (filtSigno[j]===1 && !showAscCorr)  continue;
-        if (filtSigno[j]===-1 && !showDescCorr) continue;
-        const i=filtIdx[j];
-        const tStr = new Date(filtTorigMs[j]).toISOString();
+      for (let j=0; j<filt2Idx.length; j++) {
+        if (filt2Signo[j]===1 && !showAscCorr)  continue;
+        if (filt2Signo[j]===-1 && !showDescCorr) continue;
+        const i=filt2Idx[j];
+        const tStr = new Date(filt2TorigMs[j]).toISOString();
         const ht   = corrAltura[j];
         const txt  = `${dfRaw['satellite'][i]} - ${dfRaw['signal'][i]}<br>Corr height: ${ht.toFixed(2)} m<br>Elev: ${dfRaw['elev_min'][i].toFixed(1)}-${dfRaw['elev_max'][i].toFixed(1)}°`;
-        if (filtSigno[j]===1) { tA.push(tStr); yA.push(ht); txA.push(txt); }
-        else                  { tD.push(tStr); yD.push(ht); txD.push(txt); }
+        if (filt2Signo[j]===1) { tA.push(tStr); yA.push(ht); txA.push(txt); }
+        else                   { tD.push(tStr); yD.push(ht); txD.push(txt); }
       }
       traces.push({ x:tA, y:yA, mode:'markers', type:'scattergl', name:'Asc (corr)',
         marker:{color:'#1a7a1a',size:3,opacity:0.6}, text:txA, hovertemplate:'%{text}<extra></extra>' });
@@ -746,9 +802,9 @@ function actualizar() {
     // ── LOESS-3: over final 2N reflections ─────────────────────────────────
     // corrAltura @ t̄  +  filtY @ t_eff
     if (showLw3 && corrAltura) {
-      const mergedOrigMs = [...filtTorigMs, ...filtTorigMs];
-      const mergedMs     = [...filtTorigMs, ...filtTdMs];
-      const mergedY      = [...corrAltura,  ...filtY];
+      const mergedOrigMs = [...filt2TorigMs, ...filt2TorigMs];
+      const mergedMs     = [...filt2TorigMs, ...filt2TdMs];
+      const mergedY      = [...corrAltura,   ...filt2Y];
       const order        = mergedOrigMs.map((_,i)=>i).sort((a,b)=>mergedOrigMs[a]-mergedOrigMs[b]);
 
       const t3 = performance.now();
@@ -774,8 +830,10 @@ function actualizar() {
     }
 
     Plotly.react('plot', traces, layout, { responsive:true });
-    document.getElementById('status').textContent =
-      `${filtIdx.length.toLocaleString()} reflections shown`;
+    let statusMsg = `${filtIdx.length.toLocaleString()} reflections shown`;
+    if (useLw1Filter && nRemoved > 0)
+      statusMsg += ` — ${nRemoved.toLocaleString()} removed by LOESS-1 filter (±${lw1Dist} m)`;
+    document.getElementById('status').textContent = statusMsg;
   }, 20);
 }
 </script>
